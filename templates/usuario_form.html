@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% from "_macros.html" import campo, csrf with context %}
+{% block titulo %}{{ titulo }}{% endblock %}
+{% block contenido %}
+<div class="row justify-content-center">
+  <div class="col-lg-7">
+    <h1 class="h3 mb-3">{{ titulo }}</h1>
+    <div class="card"><div class="card-body">
+      <form method="post">
+        {{ csrf() }}
+        {{ campo("nombre", "Nombre completo", "text", datos.get("nombre"), errores) }}
+        {{ campo("correo", "Correo", "email", datos.get("correo"), errores) }}
+
+        <div class="mb-3">
+          <label class="form-label" for="rol_id">Rol</label>
+          <select id="rol_id" name="rol_id" class="form-select{% if errores.get('rol_id') %} is-invalid{% endif %}">
+            <option value="">— Selecciona —</option>
+            {% for rol in roles %}
+            <option value="{{ rol.id }}" {% if datos.get('rol_id')|string == rol.id|string %}selected{% endif %}>{{ rol.etiqueta }}</option>
+            {% endfor %}
+          </select>
+          {% if errores.get('rol_id') %}<div class="invalid-feedback">{{ errores.rol_id }}</div>{% endif %}
+        </div>
+
+        <div class="form-check mb-3">
+          <input class="form-check-input" type="checkbox" id="activo" name="activo" value="1"
+                 {% if datos.get('activo') %}checked{% endif %}>
+          <label class="form-check-label" for="activo">Activo</label>
+        </div>
+
+        {{ campo("contrasena", "Contraseña", "password", "", errores) }}
+        <div class="form-text mb-3">
+          {% if usuario %}Déjala en blanco para no cambiarla. {% endif %}
+          Mínimo 8 caracteres con mayúscula, minúscula, número y carácter especial.
+        </div>
+        {{ campo("confirmacion", "Confirmar contraseña", "password") }}
+
+        <button class="btn btn-primary">Guardar</button>
+        <a href="{{ url_for('usuarios') }}" class="btn btn-link">Cancelar</a>
+      </form>
+    </div></div>
+  </div>
+</div>
+{% endblock %}

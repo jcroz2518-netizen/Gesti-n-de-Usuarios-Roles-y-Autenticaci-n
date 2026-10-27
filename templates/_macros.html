@@ -1,0 +1,26 @@
+{# Campo de formulario con su mensaje de error #}
+{% macro campo(nombre, etiqueta, tipo="text", valor="", errores={}) %}
+  <div class="mb-3">
+    <label class="form-label" for="{{ nombre }}">{{ etiqueta }}</label>
+    <input type="{{ tipo }}" id="{{ nombre }}" name="{{ nombre }}"
+           class="form-control{% if errores.get(nombre) %} is-invalid{% endif %}"
+           {% if tipo != "password" %}value="{{ valor or '' }}"{% endif %}>
+    {% if errores.get(nombre) %}<div class="invalid-feedback">{{ errores[nombre] }}</div>{% endif %}
+  </div>
+{% endmacro %}
+
+{% macro csrf() %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endmacro %}
+
+{# Tarjeta centrada para las pantallas de login, registro y recuperación #}
+{% macro tarjeta(titulo) %}
+  <div class="row justify-content-center">
+    <div class="col-md-6 col-lg-5">
+      <div class="card shadow-sm">
+        <div class="card-body p-4">
+          <h1 class="h4 mb-4">{{ titulo }}</h1>
+          {{ caller() }}
+        </div>
+      </div>
+    </div>
+  </div>
+{% endmacro %}
