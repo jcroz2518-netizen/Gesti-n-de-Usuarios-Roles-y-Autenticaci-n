@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% from "_macros.html" import campo, csrf, tarjeta with context %}
+{% block titulo %}Nueva contraseña{% endblock %}
+{% block contenido %}
+{% call tarjeta("Nueva contraseña") %}
+<form method="post">
+  {{ csrf() }}
+  {{ campo("contrasena", "Nueva contraseña", "password", "", errores) }}
+  {{ campo("confirmacion", "Confirmar contraseña", "password") }}
+  <button class="btn btn-primary w-100">Cambiar contraseña</button>
+</form>
+{% endcall %}
+{% endblock %}

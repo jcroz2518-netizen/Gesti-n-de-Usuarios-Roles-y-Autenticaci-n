@@ -1,9 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Usuarios{% endblock %}
-{% block content %}
+{% from "_macros.html" import csrf with context %}
+{% block titulo %}Usuarios{% endblock %}
+{% block contenido %}
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h1 class="h3 mb-0">Usuarios</h1>
-  <a href="{{ url_for('users.create') }}" class="btn btn-primary">Nuevo usuario</a>
+  <a href="{{ url_for('usuario_nuevo') }}" class="btn btn-primary">Nuevo usuario</a>
 </div>
 
 <form class="row g-2 mb-3" method="get">
@@ -11,8 +12,8 @@
   <div class="col-md-3">
     <select name="rol" class="form-select">
       <option value="">Todos los roles</option>
-      {% for r in roles %}
-      <option value="{{ r.name }}" {% if request.args.get('rol') == r.name %}selected{% endif %}>{{ r.label }}</option>
+      {% for rol in roles %}
+      <option value="{{ rol.nombre }}" {% if request.args.get('rol') == rol.nombre %}selected{% endif %}>{{ rol.etiqueta }}</option>
       {% endfor %}
     </select>
   </div>
@@ -30,27 +31,27 @@
 <table class="table table-striped align-middle bg-white">
   <thead><tr><th>#</th><th>Nombre</th><th>Correo</th><th>Rol</th><th>Estado</th><th>Último acceso</th><th class="text-end">Acciones</th></tr></thead>
   <tbody>
-  {% for u in users %}
+  {% for u in usuarios %}
     <tr>
       <td>{{ u.id }}</td>
-      <td>{{ u.full_name }}</td>
-      <td>{{ u.email }}</td>
-      <td>{{ u.role.label }}</td>
+      <td>{{ u.nombre }}</td>
+      <td>{{ u.correo }}</td>
+      <td>{{ u.rol_etiqueta }}</td>
       <td>
-        {% if u.active %}<span class="badge text-bg-success">Activo</span>
+        {% if u.activo %}<span class="badge text-bg-success">Activo</span>
         {% else %}<span class="badge text-bg-secondary">Inactivo</span>{% endif %}
       </td>
-      <td>{{ u.last_login.strftime('%d/%m/%Y %H:%M') if u.last_login else '—' }}</td>
+      <td>{{ u.ultimo_acceso or '—' }}</td>
       <td class="text-end text-nowrap">
-        <a href="{{ url_for('users.edit', user_id=u.id) }}" class="btn btn-sm btn-outline-primary">Editar</a>
-        {% if u.id != current_user.id %}
-        <form method="post" action="{{ url_for('users.toggle_active', user_id=u.id) }}" class="d-inline">
-          {{ action_form.hidden_tag() }}
-          <button class="btn btn-sm btn-outline-warning">{{ 'Desactivar' if u.active else 'Activar' }}</button>
+        <a href="{{ url_for('usuario_editar', usuario_id=u.id) }}" class="btn btn-sm btn-outline-primary">Editar</a>
+        {% if u.id != usuario_actual.id %}
+        <form method="post" action="{{ url_for('usuario_estado', usuario_id=u.id) }}" class="d-inline">
+          {{ csrf() }}
+          <button class="btn btn-sm btn-outline-warning">{{ 'Desactivar' if u.activo else 'Activar' }}</button>
         </form>
-        <form method="post" action="{{ url_for('users.delete', user_id=u.id) }}" class="d-inline"
-              onsubmit="return confirm('¿Eliminar a {{ u.email }}?');">
-          {{ action_form.hidden_tag() }}
+        <form method="post" action="{{ url_for('usuario_eliminar', usuario_id=u.id) }}" class="d-inline"
+              onsubmit="return confirm('¿Eliminar a {{ u.correo }}?');">
+          {{ csrf() }}
           <button class="btn btn-sm btn-outline-danger">Eliminar</button>
         </form>
         {% endif %}

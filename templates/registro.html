@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% from "_macros.html" import campo, csrf, tarjeta with context %}
+{% block titulo %}Registro{% endblock %}
+{% block contenido %}
+{% call tarjeta("Crear cuenta") %}
+<form method="post">
+  {{ csrf() }}
+  {{ campo("nombre", "Nombre completo", "text", datos.get("nombre"), errores) }}
+  {{ campo("correo", "Correo", "email", datos.get("correo"), errores) }}
+  {{ campo("contrasena", "Contraseña", "password", "", errores) }}
+  <div class="form-text mb-3">Mínimo 8 caracteres con mayúscula, minúscula, número y carácter especial.</div>
+  {{ campo("confirmacion", "Confirmar contraseña", "password") }}
+  <button class="btn btn-primary w-100">Crear cuenta</button>
+</form>
+<p class="mt-3 small text-center">¿Ya tienes cuenta? <a href="{{ url_for('login') }}">Inicia sesión</a></p>
+{% endcall %}
+{% endblock %}
