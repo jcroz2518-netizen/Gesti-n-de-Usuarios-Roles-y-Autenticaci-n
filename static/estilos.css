@@ -15,3 +15,8 @@ body {
 .navbar-brand {
   font-weight: 600;
 }
+
+/* Respeta los saltos de línea de descripciones y objetivos */
+.texto-largo {
+  white-space: pre-line;
+}

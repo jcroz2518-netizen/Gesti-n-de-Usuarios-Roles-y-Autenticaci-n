@@ -215,3 +215,151 @@ def test_no_admin_no_modifica_usuarios(cliente, entrar):
     carla = usuario("cliente@demo.com")
     assert cliente.post(f"/usuarios/{carla['id']}/eliminar").status_code == 403
     assert usuario("cliente@demo.com") is not None
+
+
+# --- Proyectos (Hito 2) ------------------------------------------------------
+DATOS_PROYECTO = {"nombre": "ERP interno", "descripcion": "Sistema de gestión", "objetivos": "Unificar áreas",
+                  "fecha_inicio": "2027-01-01", "fecha_fin": "2027-12-31", "presupuesto": "120000.50",
+                  "estado": "planificacion"}
+
+
+def proyecto(nombre):
+    return next((p for p in base_datos.listar_proyectos(nombre) if p["nombre"] == nombre), None)
+
+
+def test_seeders_crean_proyectos_con_equipo_y_fases(app):
+    portal = proyecto("Portal de clientes")
+    assert portal["estado"] == "activo"
+    assert portal["num_miembros"] == 4 and portal["num_fases"] == 5 and portal["fases_completadas"] == 2
+
+
+def test_detalle_muestra_equipo_y_fases(cliente, admin):
+    portal = proyecto("Portal de clientes")
+    respuesta = cliente.get(f"/proyectos/{portal['id']}")
+    assert "Desarrollador backend".encode() in respuesta.data and b"Diego Desarrollador" in respuesta.data
+    assert "Análisis de requisitos".encode() in respuesta.data and b"40 %" in respuesta.data
+    assert "$ 85,000.00".encode() in respuesta.data
+
+
+def test_crear_proyecto(cliente, admin):
+    respuesta = cliente.post("/proyectos/nuevo", data=DATOS_PROYECTO)
+    erp = proyecto("ERP interno")
+    assert respuesta.headers["Location"] == f"/proyectos/{erp['id']}"
+    assert erp["presupuesto"] == 120000.50 and erp["estado"] == "planificacion"
+    assert b"ERP interno" in cliente.get("/proyectos").data
+
+
+def test_crear_proyecto_valida_campos(cliente, admin):
+    datos = dict(DATOS_PROYECTO, nombre="", fecha_fin="2026-01-01", presupuesto="-5", estado="inventado")
+    respuesta = cliente.post("/proyectos/nuevo", data=datos)
+    assert "El nombre es obligatorio".encode() in respuesta.data
+    assert "no puede ser anterior".encode() in respuesta.data
+    assert "mayor o igual a 0".encode() in respuesta.data
+    assert "Selecciona un estado válido".encode() in respuesta.data
+    assert len(base_datos.listar_proyectos()) == len(base_datos.PROYECTOS_PRUEBA)
+
+
+def test_filtrar_proyectos_por_estado(cliente, admin):
+    respuesta = cliente.get("/proyectos?estado=planificacion")
+    assert "App móvil de inventario".encode() in respuesta.data
+    assert "Portal de clientes".encode() not in respuesta.data
+
+
+def test_editar_proyecto(cliente, admin):
+    portal = proyecto("Portal de clientes")
+    datos = dict(DATOS_PROYECTO, nombre="Portal de clientes", fecha_inicio=portal["fecha_inicio"],
+                 fecha_fin="2027-03-31", estado="pausado")
+    assert cliente.post(f"/proyectos/{portal['id']}/editar", data=datos).status_code == 302
+    editado = base_datos.obtener_proyecto(portal["id"])
+    assert editado["estado"] == "pausado" and editado["fecha_fin"] == "2027-03-31"
+
+
+def test_editar_proyecto_no_deja_fases_fuera_de_fechas(cliente, admin):
+    portal = proyecto("Portal de clientes")
+    datos = dict(DATOS_PROYECTO, nombre="Portal de clientes", fecha_inicio=portal["fecha_inicio"],
+                 fecha_fin="2026-12-31")
+    respuesta = cliente.post(f"/proyectos/{portal['id']}/editar", data=datos)
+    assert "ajústalas antes".encode() in respuesta.data
+    assert base_datos.obtener_proyecto(portal["id"])["fecha_fin"] == portal["fecha_fin"]
+
+
+def test_eliminar_proyecto_borra_miembros_y_fases(cliente, admin):
+    portal = proyecto("Portal de clientes")
+    cliente.post(f"/proyectos/{portal['id']}/eliminar")
+    assert base_datos.obtener_proyecto(portal["id"]) is None
+    assert base_datos.listar_miembros(portal["id"]) == [] and base_datos.listar_fases(portal["id"]) == []
+
+
+def test_asignar_cambiar_rol_y_quitar_miembro(cliente, admin):
+    app_movil = proyecto("App móvil de inventario")
+    lucia = usuario("dev2@demo.com")
+    ruta = f"/proyectos/{app_movil['id']}/miembros"
+    cliente.post(ruta, data={"usuario_id": lucia["id"], "rol_proyecto": "QA / Tester"})
+    cliente.post(ruta, data={"usuario_id": lucia["id"], "rol_proyecto": "Diseñador UX/UI"})
+    roles = {m["correo"]: m["rol_proyecto"] for m in base_datos.listar_miembros(app_movil["id"])}
+    assert roles["dev2@demo.com"] == "Diseñador UX/UI"
+    cliente.post(f"{ruta}/{lucia['id']}/quitar")
+    assert not base_datos.es_miembro(app_movil["id"], lucia["id"])
+
+
+def test_no_asigna_inactivos_ni_roles_invalidos(cliente, admin):
+    app_movil = proyecto("App móvil de inventario")
+    ruta = f"/proyectos/{app_movil['id']}/miembros"
+    inactivo = usuario("inactivo@demo.com")
+    respuesta = cliente.post(ruta, data={"usuario_id": inactivo["id"], "rol_proyecto": "Stakeholder"},
+                             follow_redirects=True)
+    assert "usuarios inactivos".encode() in respuesta.data
+    lucia = usuario("dev2@demo.com")
+    cliente.post(ruta, data={"usuario_id": lucia["id"], "rol_proyecto": "Jefe supremo"})
+    assert not base_datos.es_miembro(app_movil["id"], lucia["id"])
+    assert not base_datos.es_miembro(app_movil["id"], inactivo["id"])
+
+
+def test_eliminar_usuario_lo_quita_de_los_equipos(cliente, admin):
+    lucia = usuario("dev2@demo.com")
+    portal = proyecto("Portal de clientes")
+    cliente.post(f"/usuarios/{lucia['id']}/eliminar")
+    assert not base_datos.es_miembro(portal["id"], lucia["id"])
+
+
+def test_crud_de_fases(cliente, admin):
+    app_movil = proyecto("App móvil de inventario")
+    base = f"/proyectos/{app_movil['id']}/fases"
+    assert b'value="2"' in cliente.get(f"{base}/nueva").data  # siguiente orden sugerido
+    datos = {"nombre": "Desarrollo", "descripcion": "Sprints 1-6", "orden": "2",
+             "fecha_inicio": "2027-02-08", "fecha_fin": "2027-05-28", "estado": "pendiente"}
+    assert cliente.post(f"{base}/nueva", data=datos).status_code == 302
+    fase = base_datos.listar_fases(app_movil["id"])[-1]
+    assert fase["nombre"] == "Desarrollo" and fase["orden"] == 2
+
+    cliente.post(f"{base}/{fase['id']}/editar", data=dict(datos, estado="en_curso"))
+    assert base_datos.obtener_fase(app_movil["id"], fase["id"])["estado"] == "en_curso"
+
+    cliente.post(f"{base}/{fase['id']}/eliminar")
+    assert base_datos.obtener_fase(app_movil["id"], fase["id"]) is None
+
+
+def test_fase_debe_estar_dentro_del_proyecto(cliente, admin):
+    app_movil = proyecto("App móvil de inventario")
+    datos = {"nombre": "Fuera de plazo", "orden": "2", "fecha_inicio": "2027-06-01",
+             "fecha_fin": "2027-08-01", "estado": "pendiente"}
+    respuesta = cliente.post(f"/proyectos/{app_movil['id']}/fases/nueva", data=datos)
+    assert "dentro de las fechas del proyecto".encode() in respuesta.data
+    assert len(base_datos.listar_fases(app_movil["id"])) == 1
+
+
+def test_fase_de_otro_proyecto_da_404(cliente, admin):
+    portal, app_movil = proyecto("Portal de clientes"), proyecto("App móvil de inventario")
+    fase_portal = base_datos.listar_fases(portal["id"])[0]
+    assert cliente.post(f"/proyectos/{app_movil['id']}/fases/{fase_portal['id']}/eliminar").status_code == 404
+    assert cliente.get("/proyectos/9999").status_code == 404
+
+
+def test_no_admin_no_gestiona_proyectos(cliente, entrar):
+    entrar("dev@demo.com")
+    portal = proyecto("Portal de clientes")
+    assert cliente.post("/proyectos/nuevo", data=DATOS_PROYECTO).status_code == 403
+    assert cliente.post(f"/proyectos/{portal['id']}/eliminar").status_code == 403
+    assert cliente.post(f"/proyectos/{portal['id']}/miembros",
+                        data={"usuario_id": "1", "rol_proyecto": "Analista"}).status_code == 403
+    assert base_datos.obtener_proyecto(portal["id"]) is not None
