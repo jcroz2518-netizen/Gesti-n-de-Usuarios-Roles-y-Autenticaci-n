@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% from "_macros.html" import campo, area, seleccion, csrf with context %}
+{% block titulo %}{{ titulo }}{% endblock %}
+{% block contenido %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <h1 class="h3 mb-3">{{ titulo }}</h1>
+    <div class="card"><div class="card-body">
+      <form method="post">
+        {{ csrf() }}
+        {{ campo("nombre", "Nombre del proyecto", "text", datos.get("nombre"), errores) }}
+        {{ area("descripcion", "Descripción", datos.get("descripcion"), errores) }}
+        {{ area("objetivos", "Objetivos", datos.get("objetivos"), errores) }}
+        <div class="row">
+          <div class="col-md-6">{{ campo("fecha_inicio", "Fecha de inicio", "date", datos.get("fecha_inicio"), errores) }}</div>
+          <div class="col-md-6">{{ campo("fecha_fin", "Fecha de fin estimada", "date", datos.get("fecha_fin"), errores) }}</div>
+        </div>
+        <div class="row">
+          <div class="col-md-6">{{ campo("presupuesto", "Presupuesto base", "number", datos.get("presupuesto"), errores, min="0", step="0.01") }}</div>
+          <div class="col-md-6">{{ seleccion("estado", "Estado", ESTADOS_PROYECTO, datos.get("estado"), errores) }}</div>
+        </div>
+
+        <button class="btn btn-primary">Guardar</button>
+        <a href="{{ url_for('proyecto_detalle', proyecto_id=proyecto.id) if proyecto else url_for('proyectos') }}" class="btn btn-link">Cancelar</a>
+      </form>
+    </div></div>
+  </div>
+</div>
+{% endblock %}

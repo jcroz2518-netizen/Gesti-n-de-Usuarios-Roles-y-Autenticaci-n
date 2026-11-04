@@ -60,7 +60,16 @@ app.jinja_env.globals["csrf_token"] = token_csrf
 
 @app.context_processor
 def datos_plantillas():
-    return {"usuario_actual": g.get("usuario"), "ADMIN": ADMIN, "DESARROLLADOR": DESARROLLADOR, "CLIENTE": CLIENTE}
+    return {
+        "usuario_actual": g.get("usuario"), "ADMIN": ADMIN, "DESARROLLADOR": DESARROLLADOR, "CLIENTE": CLIENTE,
+        "ESTADOS_PROYECTO": base_datos.ESTADOS_PROYECTO, "ESTADOS_FASE": base_datos.ESTADOS_FASE,
+        "ROLES_PROYECTO": base_datos.ROLES_PROYECTO,
+    }
+
+
+@app.template_filter("moneda")
+def moneda(valor):
+    return f"$ {valor:,.2f}"
 
 
 def login_requerido(vista):
@@ -228,20 +237,13 @@ def restablecer(token):
 
 # ---------------------------------------------------------------------------
 # Panel y secciones por rol
-# Proyectos, tareas e informes son de momento páginas de demostración del
-# control de acceso; sus módulos se construirán encima.
+# Tareas e informes son de momento páginas de demostración del control de
+# acceso; sus módulos se construirán encima.
 # ---------------------------------------------------------------------------
 @app.route("/panel")
 @login_requerido
 def panel():
     return render_template("panel.html")
-
-
-@app.route("/proyectos")
-@rol_requerido(ADMIN)
-def proyectos():
-    return render_template("seccion.html", titulo="Proyectos",
-                           texto="Gestión de proyectos, presupuestos y asignación de miembros.")
 
 
 @app.route("/tareas")
@@ -339,6 +341,149 @@ def usuario_eliminar(usuario_id):
         base_datos.eliminar_usuario(usuario_id)
         flash("Usuario eliminado.", "success")
     return redirect(url_for("usuarios"))
+
+
+# ---------------------------------------------------------------------------
+# Proyectos, miembros del equipo y fases (solo Administrador)
+# ---------------------------------------------------------------------------
+def proyecto_o_404(proyecto_id):
+    proyecto = base_datos.obtener_proyecto(proyecto_id)
+    if proyecto is None:
+        abort(404)
+    return proyecto
+
+
+def fase_o_404(proyecto_id, fase_id):
+    fase = base_datos.obtener_fase(proyecto_id, fase_id)
+    if fase is None:
+        abort(404)
+    return fase
+
+
+@app.route("/proyectos")
+@rol_requerido(ADMIN)
+def proyectos():
+    lista = base_datos.listar_proyectos(request.args.get("q", "").strip(), request.args.get("estado", ""))
+    return render_template("proyectos.html", proyectos=lista)
+
+
+@app.route("/proyectos/nuevo", methods=["GET", "POST"])
+@rol_requerido(ADMIN)
+def proyecto_nuevo():
+    datos, errores = {"estado": "planificacion", "presupuesto": "0"}, {}
+    if request.method == "POST":
+        datos = request.form
+        errores = validaciones.validar_proyecto(datos)
+        if not errores:
+            proyecto_id = base_datos.crear_proyecto(datos)
+            flash("Proyecto creado. Ahora puedes asignar el equipo y definir las fases.", "success")
+            return redirect(url_for("proyecto_detalle", proyecto_id=proyecto_id))
+    return render_template("proyecto_form.html", titulo="Nuevo proyecto", datos=datos, errores=errores)
+
+
+@app.route("/proyectos/<int:proyecto_id>")
+@rol_requerido(ADMIN)
+def proyecto_detalle(proyecto_id):
+    return render_template(
+        "proyecto.html",
+        proyecto=proyecto_o_404(proyecto_id),
+        miembros=base_datos.listar_miembros(proyecto_id),
+        disponibles=base_datos.usuarios_disponibles(proyecto_id),
+        fases=base_datos.listar_fases(proyecto_id),
+    )
+
+
+@app.route("/proyectos/<int:proyecto_id>/editar", methods=["GET", "POST"])
+@rol_requerido(ADMIN)
+def proyecto_editar(proyecto_id):
+    proyecto = proyecto_o_404(proyecto_id)
+    datos, errores = dict(proyecto), {}
+    if request.method == "POST":
+        datos = request.form
+        errores = validaciones.validar_proyecto(datos, proyecto_id)
+        if not errores:
+            base_datos.actualizar_proyecto(proyecto_id, datos)
+            flash("Proyecto actualizado.", "success")
+            return redirect(url_for("proyecto_detalle", proyecto_id=proyecto_id))
+    return render_template("proyecto_form.html", titulo="Editar proyecto", datos=datos, errores=errores,
+                           proyecto=proyecto)
+
+
+@app.route("/proyectos/<int:proyecto_id>/eliminar", methods=["POST"])
+@rol_requerido(ADMIN)
+def proyecto_eliminar(proyecto_id):
+    proyecto = proyecto_o_404(proyecto_id)
+    base_datos.eliminar_proyecto(proyecto_id)
+    flash(f"Proyecto «{proyecto['nombre']}» eliminado.", "success")
+    return redirect(url_for("proyectos"))
+
+
+@app.route("/proyectos/<int:proyecto_id>/miembros", methods=["POST"])
+@rol_requerido(ADMIN)
+def miembro_asignar(proyecto_id):
+    """Añade un miembro o cambia su rol si ya estaba en el equipo."""
+    proyecto_o_404(proyecto_id)
+    error = validaciones.validar_miembro(request.form, proyecto_id)
+    if error:
+        flash(error, "danger")
+    else:
+        usuario_id = int(request.form["usuario_id"])
+        ya_era_miembro = base_datos.es_miembro(proyecto_id, usuario_id)
+        base_datos.asignar_miembro(proyecto_id, usuario_id, request.form["rol_proyecto"])
+        flash("Rol actualizado." if ya_era_miembro else "Miembro añadido al equipo.", "success")
+    return redirect(url_for("proyecto_detalle", proyecto_id=proyecto_id) + "#equipo")
+
+
+@app.route("/proyectos/<int:proyecto_id>/miembros/<int:usuario_id>/quitar", methods=["POST"])
+@rol_requerido(ADMIN)
+def miembro_quitar(proyecto_id, usuario_id):
+    proyecto_o_404(proyecto_id)
+    if not base_datos.es_miembro(proyecto_id, usuario_id):
+        abort(404)
+    base_datos.quitar_miembro(proyecto_id, usuario_id)
+    flash("Miembro retirado del equipo.", "success")
+    return redirect(url_for("proyecto_detalle", proyecto_id=proyecto_id) + "#equipo")
+
+
+@app.route("/proyectos/<int:proyecto_id>/fases/nueva", methods=["GET", "POST"])
+@rol_requerido(ADMIN)
+def fase_nueva(proyecto_id):
+    proyecto = proyecto_o_404(proyecto_id)
+    datos = {"orden": base_datos.siguiente_orden(proyecto_id), "estado": "pendiente",
+             "fecha_inicio": proyecto["fecha_inicio"], "fecha_fin": proyecto["fecha_fin"]}
+    errores = {}
+    if request.method == "POST":
+        datos = request.form
+        errores = validaciones.validar_fase(datos, proyecto)
+        if not errores:
+            base_datos.crear_fase(proyecto_id, datos)
+            flash("Fase creada.", "success")
+            return redirect(url_for("proyecto_detalle", proyecto_id=proyecto_id) + "#fases")
+    return render_template("fase_form.html", titulo="Nueva fase", proyecto=proyecto, datos=datos, errores=errores)
+
+
+@app.route("/proyectos/<int:proyecto_id>/fases/<int:fase_id>/editar", methods=["GET", "POST"])
+@rol_requerido(ADMIN)
+def fase_editar(proyecto_id, fase_id):
+    proyecto = proyecto_o_404(proyecto_id)
+    datos, errores = dict(fase_o_404(proyecto_id, fase_id)), {}
+    if request.method == "POST":
+        datos = request.form
+        errores = validaciones.validar_fase(datos, proyecto)
+        if not errores:
+            base_datos.actualizar_fase(fase_id, datos)
+            flash("Fase actualizada.", "success")
+            return redirect(url_for("proyecto_detalle", proyecto_id=proyecto_id) + "#fases")
+    return render_template("fase_form.html", titulo="Editar fase", proyecto=proyecto, datos=datos, errores=errores)
+
+
+@app.route("/proyectos/<int:proyecto_id>/fases/<int:fase_id>/eliminar", methods=["POST"])
+@rol_requerido(ADMIN)
+def fase_eliminar(proyecto_id, fase_id):
+    fase_o_404(proyecto_id, fase_id)
+    base_datos.eliminar_fase(fase_id)
+    flash("Fase eliminada.", "success")
+    return redirect(url_for("proyecto_detalle", proyecto_id=proyecto_id) + "#fases")
 
 
 # ---------------------------------------------------------------------------

@@ -1,13 +1,46 @@
-{# Campo de formulario con su mensaje de error #}
+{# Campo de formulario con su mensaje de error. Los argumentos extra (min, step...) se pasan como atributos. #}
 {% macro campo(nombre, etiqueta, tipo="text", valor="", errores={}) %}
   <div class="mb-3">
     <label class="form-label" for="{{ nombre }}">{{ etiqueta }}</label>
     <input type="{{ tipo }}" id="{{ nombre }}" name="{{ nombre }}"
            class="form-control{% if errores.get(nombre) %} is-invalid{% endif %}"
-           {% if tipo != "password" %}value="{{ valor or '' }}"{% endif %}>
+           {% if tipo != "password" %}value="{{ valor if valor is not none else '' }}"{% endif %}
+           {% for atributo, v in kwargs.items() %}{{ atributo }}="{{ v }}" {% endfor %}>
     {% if errores.get(nombre) %}<div class="invalid-feedback">{{ errores[nombre] }}</div>{% endif %}
   </div>
 {% endmacro %}
+
+{% macro area(nombre, etiqueta, valor="", errores={}, filas=3) %}
+  <div class="mb-3">
+    <label class="form-label" for="{{ nombre }}">{{ etiqueta }}</label>
+    <textarea id="{{ nombre }}" name="{{ nombre }}" rows="{{ filas }}"
+              class="form-control{% if errores.get(nombre) %} is-invalid{% endif %}">{{ valor or '' }}</textarea>
+    {% if errores.get(nombre) %}<div class="invalid-feedback">{{ errores[nombre] }}</div>{% endif %}
+  </div>
+{% endmacro %}
+
+{# Lista desplegable a partir de un diccionario {valor: etiqueta} #}
+{% macro seleccion(nombre, etiqueta, opciones, valor="", errores={}) %}
+  <div class="mb-3">
+    <label class="form-label" for="{{ nombre }}">{{ etiqueta }}</label>
+    <select id="{{ nombre }}" name="{{ nombre }}" class="form-select{% if errores.get(nombre) %} is-invalid{% endif %}">
+      {% for clave, texto in opciones.items() %}
+      <option value="{{ clave }}" {% if valor == clave %}selected{% endif %}>{{ texto }}</option>
+      {% endfor %}
+    </select>
+    {% if errores.get(nombre) %}<div class="invalid-feedback">{{ errores[nombre] }}</div>{% endif %}
+  </div>
+{% endmacro %}
+
+{% macro estado_proyecto(estado) -%}
+  {%- set colores = {"planificacion": "info", "activo": "success", "pausado": "warning", "finalizado": "secondary"} -%}
+  <span class="badge text-bg-{{ colores.get(estado, 'light') }}">{{ ESTADOS_PROYECTO.get(estado, estado) }}</span>
+{%- endmacro %}
+
+{% macro estado_fase(estado) -%}
+  {%- set colores = {"pendiente": "secondary", "en_curso": "primary", "completada": "success"} -%}
+  <span class="badge text-bg-{{ colores.get(estado, 'light') }}">{{ ESTADOS_FASE.get(estado, estado) }}</span>
+{%- endmacro %}
 
 {% macro csrf() %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endmacro %}
 
