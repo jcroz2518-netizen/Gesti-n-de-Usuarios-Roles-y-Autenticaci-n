@@ -87,6 +87,37 @@ MIGRACIONES = [
 
     CREATE INDEX idx_fases_proyecto ON fases (proyecto_id, orden);
     """,
+    # 3 - tareas de cada fase y registro de horas reales invertidas
+    """
+    CREATE TABLE tareas (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        fase_id         INTEGER NOT NULL REFERENCES fases(id) ON DELETE CASCADE,
+        titulo          TEXT NOT NULL,
+        descripcion     TEXT NOT NULL DEFAULT '',
+        prioridad       TEXT NOT NULL DEFAULT 'media'
+                        CHECK (prioridad IN ('baja', 'media', 'alta', 'critica')),
+        responsable_id  INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+        estado          TEXT NOT NULL DEFAULT 'por_hacer'
+                        CHECK (estado IN ('por_hacer', 'en_progreso', 'en_revision', 'concluida')),
+        horas_estimadas REAL NOT NULL DEFAULT 0 CHECK (horas_estimadas >= 0),
+        creado          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        actualizado     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE registros_horas (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        tarea_id   INTEGER NOT NULL REFERENCES tareas(id) ON DELETE CASCADE,
+        usuario_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+        fecha      TEXT NOT NULL,
+        horas      REAL NOT NULL CHECK (horas > 0),
+        nota       TEXT NOT NULL DEFAULT '',
+        creado     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX idx_tareas_fase ON tareas (fase_id);
+    CREATE INDEX idx_tareas_responsable ON tareas (responsable_id);
+    CREATE INDEX idx_registros_tarea ON registros_horas (tarea_id);
+    """,
 ]
 
 ESTADOS_PROYECTO = {
@@ -116,6 +147,21 @@ ROLES_PROYECTO = [
     "DevOps",
     "Stakeholder",
 ]
+
+PRIORIDADES = {
+    "baja": "Baja",
+    "media": "Media",
+    "alta": "Alta",
+    "critica": "Crítica",
+}
+
+# El orden de las claves es el de las columnas del tablero Kanban
+ESTADOS_TAREA = {
+    "por_hacer": "Por hacer",
+    "en_progreso": "En progreso",
+    "en_revision": "En revisión",
+    "concluida": "Concluida",
+}
 
 # ---------------------------------------------------------------------------
 # Datos de prueba
@@ -154,6 +200,29 @@ PROYECTOS_PRUEBA = [
         [("admin@demo.com", "Project Manager"), ("dev@demo.com", "Desarrollador full stack")],
         [("Levantamiento de requisitos", "2027-01-11", "2027-02-05", "pendiente")],
     ),
+]
+
+# (proyecto, fase, título, prioridad, responsable, estado, horas estimadas, [(fecha, horas, nota)])
+# Las horas las registra el responsable de la tarea.
+TAREAS_PRUEBA = [
+    ("Portal de clientes", "Análisis de requisitos", "Entrevistas con el cliente", "media", "pm@demo.com",
+     "concluida", 16, [("2026-09-08", 6, "Reunión con atención al cliente"), ("2026-09-10", 8, "")]),
+    ("Portal de clientes", "Análisis de requisitos", "Documento de requisitos", "alta", "pm@demo.com",
+     "concluida", 24, [("2026-09-22", 12, ""), ("2026-09-25", 10, "Revisión con el cliente")]),
+    ("Portal de clientes", "Diseño", "Modelo de base de datos", "alta", "dev@demo.com",
+     "concluida", 20, [("2026-10-07", 9, ""), ("2026-10-09", 14, "Normalización y relaciones")]),
+    ("Portal de clientes", "Diseño", "Prototipo de pantallas", "media", "dev2@demo.com",
+     "concluida", 30, [("2026-10-14", 12, ""), ("2026-10-20", 16, "Ajustes tras la revisión")]),
+    ("Portal de clientes", "Desarrollo", "API de autenticación", "critica", "dev@demo.com",
+     "en_revision", 24, [("2026-11-03", 8, ""), ("2026-11-05", 10, "Pruebas unitarias")]),
+    ("Portal de clientes", "Desarrollo", "Módulo de pedidos", "alta", "dev@demo.com",
+     "en_progreso", 40, [("2026-11-10", 7, "")]),
+    ("Portal de clientes", "Desarrollo", "Pantalla de facturas", "media", "dev2@demo.com",
+     "en_progreso", 32, [("2026-11-09", 6, "")]),
+    ("Portal de clientes", "Desarrollo", "Notificaciones por correo", "baja", None, "por_hacer", 12, []),
+    ("Portal de clientes", "Pruebas", "Plan de pruebas", "media", "dev2@demo.com", "por_hacer", 10, []),
+    ("App móvil de inventario", "Levantamiento de requisitos", "Reunión con el equipo de almacén", "alta",
+     "admin@demo.com", "por_hacer", 6, []),
 ]
 
 
@@ -214,12 +283,43 @@ def sembrar_proyectos(conexion):
     return len(PROYECTOS_PRUEBA)
 
 
+def sembrar_tareas(conexion):
+    """Solo carga las tareas de prueba si todavía no hay ninguna.
+    Se salta las que apuntan a un proyecto o fase que ya no existe."""
+    if conexion.execute("SELECT 1 FROM tareas").fetchone():
+        return 0
+    creadas = 0
+    for proyecto, fase, titulo, prioridad, correo, estado, horas, registros in TAREAS_PRUEBA:
+        fila_fase = conexion.execute(
+            "SELECT f.id FROM fases f JOIN proyectos p ON p.id = f.proyecto_id WHERE p.nombre = ? AND f.nombre = ?",
+            (proyecto, fase),
+        ).fetchone()
+        if fila_fase is None:
+            continue
+        fila_usuario = conexion.execute("SELECT id FROM usuarios WHERE correo = ?", (correo or "",)).fetchone()
+        responsable_id = fila_usuario["id"] if fila_usuario else None
+        tarea_id = conexion.execute(
+            "INSERT INTO tareas (fase_id, titulo, prioridad, responsable_id, estado, horas_estimadas) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (fila_fase["id"], titulo, prioridad, responsable_id, estado, horas),
+        ).lastrowid
+        for fecha, horas_reales, nota in registros:
+            conexion.execute(
+                "INSERT INTO registros_horas (tarea_id, usuario_id, fecha, horas, nota) VALUES (?, ?, ?, ?, ?)",
+                (tarea_id, responsable_id, fecha, horas_reales, nota),
+            )
+        creadas += 1
+    conexion.commit()
+    return creadas
+
+
 def inicializar(ruta=RUTA_BD, con_datos=False):
     conexion = abrir(ruta)
     migrar(conexion)
     if con_datos:
         sembrar(conexion)
         sembrar_proyectos(conexion)
+        sembrar_tareas(conexion)
     conexion.close()
 
 
@@ -430,11 +530,40 @@ def asignar_miembro(proyecto_id, usuario_id, rol_proyecto):
 
 
 def quitar_miembro(proyecto_id, usuario_id):
+    """Lo saca del equipo y deja sin responsable sus tareas de ese proyecto (sus horas se conservan)."""
     conexion = obtener_conexion()
     conexion.execute(
         "DELETE FROM miembros_proyecto WHERE proyecto_id = ? AND usuario_id = ?", (proyecto_id, usuario_id)
     )
+    conexion.execute(
+        "UPDATE tareas SET responsable_id = NULL "
+        "WHERE responsable_id = ? AND fase_id IN (SELECT id FROM fases WHERE proyecto_id = ?)",
+        (usuario_id, proyecto_id),
+    )
     conexion.commit()
+
+
+def proyectos_de_usuario(usuario_id=None):
+    """Todos los proyectos (usuario_id=None) o solo aquellos de los que el usuario es miembro."""
+    if usuario_id is None:
+        return obtener_conexion().execute("SELECT id, nombre FROM proyectos ORDER BY nombre").fetchall()
+    return obtener_conexion().execute(
+        "SELECT p.id, p.nombre FROM proyectos p JOIN miembros_proyecto m ON m.proyecto_id = p.id "
+        "WHERE m.usuario_id = ? ORDER BY p.nombre",
+        (usuario_id,),
+    ).fetchall()
+
+
+def miembros_de_proyectos(proyecto_ids):
+    """Usuarios distintos que forman parte de alguno de esos proyectos (para filtrar por responsable)."""
+    if not proyecto_ids:
+        return []
+    marcas = ", ".join("?" * len(proyecto_ids))
+    return obtener_conexion().execute(
+        f"SELECT DISTINCT u.id, u.nombre FROM usuarios u JOIN miembros_proyecto m ON m.usuario_id = u.id "
+        f"WHERE m.proyecto_id IN ({marcas}) ORDER BY u.nombre",
+        list(proyecto_ids),
+    ).fetchall()
 
 
 # --- Fases (EDT/WBS) ---------------------------------------------------------
@@ -450,8 +579,17 @@ def valores_fase(datos):
 
 
 def listar_fases(proyecto_id):
+    """Fases del proyecto con el resumen de sus tareas (número y horas estimadas/reales)."""
     return obtener_conexion().execute(
-        "SELECT * FROM fases WHERE proyecto_id = ? ORDER BY orden, fecha_inicio, id", (proyecto_id,)
+        """
+        SELECT f.*,
+               (SELECT COUNT(*) FROM tareas t WHERE t.fase_id = f.id) AS num_tareas,
+               (SELECT COALESCE(SUM(t.horas_estimadas), 0) FROM tareas t WHERE t.fase_id = f.id) AS horas_estimadas,
+               (SELECT COALESCE(SUM(h.horas), 0) FROM registros_horas h JOIN tareas t ON t.id = h.tarea_id
+                WHERE t.fase_id = f.id) AS horas_reales
+        FROM fases f WHERE f.proyecto_id = ? ORDER BY f.orden, f.fecha_inicio, f.id
+        """,
+        (proyecto_id,),
     ).fetchall()
 
 
@@ -503,6 +641,135 @@ def eliminar_fase(fase_id):
     conexion.commit()
 
 
+def contar_tareas_fase(fase_id):
+    return obtener_conexion().execute("SELECT COUNT(*) FROM tareas WHERE fase_id = ?", (fase_id,)).fetchone()[0]
+
+
+# --- Tareas ------------------------------------------------------------------
+CONSULTA_TAREA = """
+    SELECT t.*, f.nombre AS fase, f.orden AS fase_orden, f.proyecto_id, p.nombre AS proyecto,
+           u.nombre AS responsable,
+           (SELECT COALESCE(SUM(h.horas), 0) FROM registros_horas h WHERE h.tarea_id = t.id) AS horas_reales
+    FROM tareas t
+    JOIN fases f ON f.id = t.fase_id
+    JOIN proyectos p ON p.id = f.proyecto_id
+    LEFT JOIN usuarios u ON u.id = t.responsable_id
+"""
+
+ORDEN_PRIORIDAD = "CASE t.prioridad WHEN 'critica' THEN 0 WHEN 'alta' THEN 1 WHEN 'media' THEN 2 ELSE 3 END"
+
+
+def valores_tarea(datos):
+    return (
+        int(datos["fase_id"]),
+        datos["titulo"].strip(),
+        datos.get("descripcion", "").strip(),
+        datos["prioridad"],
+        int(datos["responsable_id"]) if datos.get("responsable_id") else None,
+        datos["estado"],
+        float(datos["horas_estimadas"]),
+    )
+
+
+def listar_tareas(texto="", proyecto="", responsable="", estado="", prioridad="", miembro_id=None):
+    """Filtros opcionales. responsable puede ser un id o "ninguno" (sin asignar).
+    Con miembro_id solo devuelve tareas de proyectos de los que ese usuario es miembro."""
+    sql = CONSULTA_TAREA + " WHERE 1 = 1"
+    parametros = []
+    if texto:
+        sql += " AND (t.titulo LIKE ? OR t.descripcion LIKE ?)"
+        parametros += [f"%{texto}%", f"%{texto}%"]
+    if str(proyecto).isdigit():
+        sql += " AND f.proyecto_id = ?"
+        parametros.append(int(proyecto))
+    if responsable == "ninguno":
+        sql += " AND t.responsable_id IS NULL"
+    elif str(responsable).isdigit():
+        sql += " AND t.responsable_id = ?"
+        parametros.append(int(responsable))
+    if estado in ESTADOS_TAREA:
+        sql += " AND t.estado = ?"
+        parametros.append(estado)
+    if prioridad in PRIORIDADES:
+        sql += " AND t.prioridad = ?"
+        parametros.append(prioridad)
+    if miembro_id is not None:
+        sql += " AND f.proyecto_id IN (SELECT proyecto_id FROM miembros_proyecto WHERE usuario_id = ?)"
+        parametros.append(miembro_id)
+    sql += f" ORDER BY {ORDEN_PRIORIDAD}, p.nombre, f.orden, t.id"
+    return obtener_conexion().execute(sql, parametros).fetchall()
+
+
+def obtener_tarea(tarea_id):
+    return obtener_conexion().execute(CONSULTA_TAREA + " WHERE t.id = ?", (tarea_id,)).fetchone()
+
+
+def crear_tarea(datos):
+    conexion = obtener_conexion()
+    cursor = conexion.execute(
+        "INSERT INTO tareas (fase_id, titulo, descripcion, prioridad, responsable_id, estado, horas_estimadas) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        valores_tarea(datos),
+    )
+    conexion.commit()
+    return cursor.lastrowid
+
+
+def actualizar_tarea(tarea_id, datos):
+    conexion = obtener_conexion()
+    conexion.execute(
+        "UPDATE tareas SET fase_id = ?, titulo = ?, descripcion = ?, prioridad = ?, responsable_id = ?, "
+        "estado = ?, horas_estimadas = ?, actualizado = CURRENT_TIMESTAMP WHERE id = ?",
+        valores_tarea(datos) + (tarea_id,),
+    )
+    conexion.commit()
+
+
+def cambiar_estado_tarea(tarea_id, estado):
+    conexion = obtener_conexion()
+    conexion.execute(
+        "UPDATE tareas SET estado = ?, actualizado = CURRENT_TIMESTAMP WHERE id = ?", (estado, tarea_id)
+    )
+    conexion.commit()
+
+
+def eliminar_tarea(tarea_id):
+    """Borra también sus registros de horas (ON DELETE CASCADE)."""
+    conexion = obtener_conexion()
+    conexion.execute("DELETE FROM tareas WHERE id = ?", (tarea_id,))
+    conexion.commit()
+
+
+# --- Registro de horas reales ------------------------------------------------
+def listar_registros(tarea_id):
+    return obtener_conexion().execute(
+        "SELECT h.*, u.nombre AS usuario FROM registros_horas h LEFT JOIN usuarios u ON u.id = h.usuario_id "
+        "WHERE h.tarea_id = ? ORDER BY h.fecha DESC, h.id DESC",
+        (tarea_id,),
+    ).fetchall()
+
+
+def obtener_registro(tarea_id, registro_id):
+    return obtener_conexion().execute(
+        "SELECT * FROM registros_horas WHERE tarea_id = ? AND id = ?", (tarea_id, registro_id)
+    ).fetchone()
+
+
+def registrar_horas(tarea_id, usuario_id, fecha, horas, nota=""):
+    conexion = obtener_conexion()
+    conexion.execute(
+        "INSERT INTO registros_horas (tarea_id, usuario_id, fecha, horas, nota) VALUES (?, ?, ?, ?, ?)",
+        (tarea_id, usuario_id, fecha, float(horas), nota.strip()),
+    )
+    conexion.commit()
+
+
+def eliminar_registro(registro_id):
+    conexion = obtener_conexion()
+    conexion.execute("DELETE FROM registros_horas WHERE id = ?", (registro_id,))
+    conexion.commit()
+
+
 if __name__ == "__main__":
     if "--reiniciar" in sys.argv and os.path.exists(RUTA_BD):
         os.remove(RUTA_BD)
@@ -511,4 +778,5 @@ if __name__ == "__main__":
     migrar(conexion)
     print(f"{sembrar(conexion)} usuarios de prueba creados (contraseña: {CONTRASENA_PRUEBA}).")
     print(f"{sembrar_proyectos(conexion)} proyectos de prueba creados.")
+    print(f"{sembrar_tareas(conexion)} tareas de prueba creadas.")
     conexion.close()

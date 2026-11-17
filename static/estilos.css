@@ -20,3 +20,24 @@ body {
 .texto-largo {
   white-space: pre-line;
 }
+
+/* Tablero Kanban de tareas */
+.kanban-columna {
+  background-color: #e9ecef;
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  min-height: 12rem;
+  transition: background-color 0.15s;
+}
+
+.kanban-columna.destino {
+  background-color: #cfe2ff;
+}
+
+.kanban-tarjeta[draggable] {
+  cursor: grab;
+}
+
+.kanban-tarjeta.arrastrando {
+  opacity: 0.5;
+}

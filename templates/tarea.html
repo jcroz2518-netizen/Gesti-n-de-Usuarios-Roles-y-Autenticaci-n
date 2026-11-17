@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% from "_macros.html" import campo, csrf, estado_tarea, prioridad, consumo with context %}
+{% block titulo %}{{ tarea.titulo }}{% endblock %}
+{% block contenido %}
+<div class="d-flex justify-content-between align-items-start mb-3 flex-wrap gap-2">
+  <div>
+    <a href="{{ url_for('tareas', proyecto=tarea.proyecto_id) }}" class="small">&larr; Tareas de {{ tarea.proyecto }}</a>
+    <h1 class="h3 mb-0">{{ tarea.titulo }} {{ estado_tarea(tarea.estado) }} {{ prioridad(tarea.prioridad) }}</h1>
+  </div>
+  {% if usuario_actual.rol == ADMIN %}
+  <div class="text-nowrap">
+    <a href="{{ url_for('tarea_editar', tarea_id=tarea.id) }}" class="btn btn-outline-primary">Editar</a>
+    <form method="post" action="{{ url_for('tarea_eliminar', tarea_id=tarea.id) }}" class="d-inline"
+          onsubmit="return confirm('¿Eliminar la tarea y sus horas registradas?');">
+      {{ csrf() }}
+      <button class="btn btn-outline-danger">Eliminar</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-lg-8"><div class="card h-100"><div class="card-body">
+    <h2 class="h6 text-muted text-uppercase">Descripción</h2>
+    <p class="texto-largo">{{ tarea.descripcion or '—' }}</p>
+    <dl class="row mb-0 small">
+      <dt class="col-sm-3">Proyecto</dt>
+      <dd class="col-sm-9">
+        {% if usuario_actual.rol == ADMIN %}<a href="{{ url_for('proyecto_detalle', proyecto_id=tarea.proyecto_id) }}">{{ tarea.proyecto }}</a>
+        {% else %}{{ tarea.proyecto }}{% endif %}
+      </dd>
+      <dt class="col-sm-3">Fase</dt><dd class="col-sm-9">{{ tarea.fase_orden }}. {{ tarea.fase }}</dd>
+      <dt class="col-sm-3">Responsable</dt><dd class="col-sm-9">{{ tarea.responsable or 'Sin asignar' }}</dd>
+      <dt class="col-sm-3">Creada</dt><dd class="col-sm-9">{{ tarea.creado }}</dd>
+      <dt class="col-sm-3">Actualizada</dt><dd class="col-sm-9 mb-0">{{ tarea.actualizado }}</dd>
+    </dl>
+  </div></div></div>
+
+  <div class="col-lg-4"><div class="card h-100"><div class="card-body">
+    <h2 class="h6 text-muted text-uppercase">Estimación</h2>
+    {% set reales, estimadas = tarea.horas_reales, tarea.horas_estimadas %}
+    <dl class="row mb-2">
+      <dt class="col-7">Horas planificadas</dt><dd class="col-5 text-end">{{ estimadas|horas }}</dd>
+      <dt class="col-7">Horas reales</dt><dd class="col-5 text-end">{{ reales|horas }}</dd>
+      <dt class="col-7">Desviación</dt>
+      <dd class="col-5 text-end {{ 'text-danger' if reales > estimadas else 'text-success' }}">
+        {{ '+' if reales > estimadas else '' }}{{ (reales - estimadas)|horas }}
+      </dd>
+    </dl>
+    {% set uso = (100 * reales / estimadas)|round|int if estimadas else 0 %}
+    <div class="progress" role="progressbar" aria-label="Horas consumidas" aria-valuenow="{{ uso }}" aria-valuemin="0" aria-valuemax="100">
+      <div class="progress-bar {{ 'bg-danger' if uso > 100 else '' }}" style="width: {{ [uso, 100]|min }}%">{{ uso }} %</div>
+    </div>
+    <small class="text-muted">de las horas estimadas consumidas</small>
+
+    {% if puede_trabajar(tarea) %}
+    <form method="post" action="{{ url_for('tarea_estado', tarea_id=tarea.id) }}" class="d-flex gap-2 mt-3">
+      {{ csrf() }}
+      <select name="estado" class="form-select form-select-sm" aria-label="Estado">
+        {% for clave, texto in ESTADOS_TAREA.items() %}
+        <option value="{{ clave }}" {% if tarea.estado == clave %}selected{% endif %}>{{ texto }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn btn-sm btn-outline-primary text-nowrap">Cambiar estado</button>
+    </form>
+    {% endif %}
+  </div></div></div>
+</div>
+
+{# --- Registro de horas reales --- #}
+<h2 class="h4" id="horas">Horas invertidas</h2>
+<div class="card"><div class="card-body">
+  {% if puede_trabajar(tarea) %}
+  <form method="post" action="{{ url_for('tarea_horas', tarea_id=tarea.id) }}#horas" class="row g-2 align-items-start mb-3">
+    {{ csrf() }}
+    <div class="col-md-3">{{ campo("fecha", "Fecha", "date", datos.get("fecha"), errores, max=hoy) }}</div>
+    <div class="col-md-2">{{ campo("horas", "Horas", "number", datos.get("horas"), errores, min="0.25", max="24", step="0.25") }}</div>
+    <div class="col-md-5">{{ campo("nota", "Nota (opcional)", "text", datos.get("nota"), errores, maxlength="500") }}</div>
+    <div class="col-md-2 pt-md-4 mt-md-2"><button class="btn btn-primary w-100">Registrar</button></div>
+  </form>
+  {% endif %}
+
+  <div class="table-responsive">
+  <table class="table align-middle mb-0">
+    <thead><tr><th>Fecha</th><th>Persona</th><th class="text-end">Horas</th><th>Nota</th><th></th></tr></thead>
+    <tbody>
+    {% for r in registros %}
+      <tr>
+        <td class="text-nowrap">{{ r.fecha }}</td>
+        <td>{{ r.usuario or 'Usuario eliminado' }}</td>
+        <td class="text-end">{{ r.horas|horas }}</td>
+        <td class="small">{{ r.nota }}</td>
+        <td class="text-end">
+          {% if usuario_actual.rol == ADMIN or r.usuario_id == usuario_actual.id %}
+          <form method="post" action="{{ url_for('registro_eliminar', tarea_id=tarea.id, registro_id=r.id) }}"
+                onsubmit="return confirm('¿Eliminar este registro de horas?');">
+            {{ csrf() }}
+            <button class="btn btn-sm btn-outline-danger">Eliminar</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="text-center text-muted">Todavía no se han registrado horas.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div></div>
+{% endblock %}

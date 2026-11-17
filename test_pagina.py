@@ -363,3 +363,211 @@ def test_no_admin_no_gestiona_proyectos(cliente, entrar):
     assert cliente.post(f"/proyectos/{portal['id']}/miembros",
                         data={"usuario_id": "1", "rol_proyecto": "Analista"}).status_code == 403
     assert base_datos.obtener_proyecto(portal["id"]) is not None
+
+
+# --- Tareas y estimación de tiempos (Hito 3) ---------------------------------
+def tarea(titulo):
+    return next((t for t in base_datos.listar_tareas(titulo) if t["titulo"] == titulo), None)
+
+
+def fase(nombre_proyecto, nombre_fase):
+    return next(f for f in base_datos.listar_fases(proyecto(nombre_proyecto)["id"]) if f["nombre"] == nombre_fase)
+
+
+def datos_tarea(**cambios):
+    datos = {"titulo": "Exportar a PDF", "descripcion": "Facturas en PDF", "prioridad": "alta",
+             "estado": "por_hacer", "horas_estimadas": "8",
+             "fase_id": str(fase("Portal de clientes", "Desarrollo")["id"]),
+             "responsable_id": str(usuario("dev2@demo.com")["id"])}
+    datos.update(cambios)
+    return datos
+
+
+def test_seeders_crean_tareas_con_horas(app):
+    assert len(base_datos.listar_tareas()) == len(base_datos.TAREAS_PRUEBA)
+    api = tarea("API de autenticación")
+    assert api["horas_estimadas"] == 24 and api["horas_reales"] == 18 and api["estado"] == "en_revision"
+    assert tarea("Notificaciones por correo")["responsable_id"] is None
+
+
+def test_lista_filtra_por_responsable_estado_y_prioridad(cliente, admin):
+    lucia = usuario("dev2@demo.com")
+    respuesta = cliente.get(f"/tareas?responsable={lucia['id']}")
+    assert b"Pantalla de facturas" in respuesta.data and "Módulo de pedidos".encode() not in respuesta.data
+    respuesta = cliente.get("/tareas?responsable=ninguno")
+    assert b"Notificaciones por correo" in respuesta.data and b"Plan de pruebas" not in respuesta.data
+    respuesta = cliente.get("/tareas?estado=en_revision")
+    assert "API de autenticación".encode() in respuesta.data and b"Plan de pruebas" not in respuesta.data
+    respuesta = cliente.get("/tareas?prioridad=critica")
+    assert "API de autenticación".encode() in respuesta.data and "Módulo de pedidos".encode() not in respuesta.data
+
+
+def test_tablero_kanban(cliente, admin):
+    respuesta = cliente.get("/tareas?vista=kanban")
+    texto = respuesta.data.decode()
+    assert respuesta.status_code == 200
+    assert all(columna in texto for columna in base_datos.ESTADOS_TAREA.values())
+    assert 'draggable="true"' in texto and 'id="form-mover"' in texto
+
+
+def test_desarrollador_solo_ve_tareas_de_sus_proyectos(cliente, entrar):
+    entrar("dev2@demo.com")  # miembro del Portal, no de la App móvil
+    respuesta = cliente.get("/tareas")
+    assert b"Pantalla de facturas" in respuesta.data
+    assert b"equipo de almac" not in respuesta.data
+    ajena = tarea("Reunión con el equipo de almacén")
+    assert cliente.get(f"/tareas/{ajena['id']}").status_code == 403
+
+
+def test_desarrollador_no_crea_ni_edita_tareas(cliente, entrar):
+    entrar("dev@demo.com")
+    portal = proyecto("Portal de clientes")
+    assert cliente.post(f"/tareas/nueva?proyecto={portal['id']}", data=datos_tarea()).status_code == 403
+    api = tarea("API de autenticación")
+    assert cliente.post(f"/tareas/{api['id']}/eliminar").status_code == 403
+    assert tarea("Exportar a PDF") is None
+
+
+def test_cliente_no_accede_a_tareas(cliente, entrar):
+    entrar("cliente@demo.com")
+    assert cliente.get(f"/tareas/{tarea('Plan de pruebas')['id']}").status_code == 403
+
+
+def test_nueva_tarea_pide_primero_el_proyecto(cliente, admin):
+    respuesta = cliente.get("/tareas/nueva")
+    assert "¿A qué proyecto pertenece?".encode() in respuesta.data
+    portal = proyecto("Portal de clientes")
+    assert "Análisis de requisitos".encode() in cliente.get(f"/tareas/nueva?proyecto={portal['id']}").data
+
+
+def test_crear_tarea(cliente, admin):
+    portal = proyecto("Portal de clientes")
+    respuesta = cliente.post(f"/tareas/nueva?proyecto={portal['id']}", data=datos_tarea())
+    nueva = tarea("Exportar a PDF")
+    assert respuesta.headers["Location"] == f"/tareas/{nueva['id']}"
+    assert nueva["responsable_id"] == usuario("dev2@demo.com")["id"]
+    assert nueva["prioridad"] == "alta" and nueva["horas_estimadas"] == 8 and nueva["fase"] == "Desarrollo"
+
+
+def test_crear_tarea_valida_campos(cliente, admin):
+    app_movil = proyecto("App móvil de inventario")
+    datos = datos_tarea(titulo="", prioridad="urgentisima", estado="x", horas_estimadas="-1",
+                        responsable_id=str(usuario("cliente@demo.com")["id"]))  # fase y cliente son de otro proyecto
+    respuesta = cliente.post(f"/tareas/nueva?proyecto={app_movil['id']}", data=datos)
+    texto = respuesta.data.decode()
+    for mensaje in ("El título es obligatorio", "Selecciona una fase del proyecto", "Selecciona una prioridad",
+                    "Selecciona un estado", "Las horas estimadas deben ser", "debe ser miembro del equipo"):
+        assert mensaje in texto, mensaje
+    assert tarea("") is None and len(base_datos.listar_tareas()) == len(base_datos.TAREAS_PRUEBA)
+
+
+def test_no_asigna_tareas_a_inactivos(cliente, admin):
+    portal = proyecto("Portal de clientes")
+    base_datos.cambiar_estado(usuario("dev2@demo.com")["id"])
+    respuesta = cliente.post(f"/tareas/nueva?proyecto={portal['id']}", data=datos_tarea())
+    assert "usuarios inactivos".encode() in respuesta.data
+
+
+def test_editar_tarea(cliente, admin):
+    pedidos = tarea("Módulo de pedidos")
+    datos = datos_tarea(titulo="Módulo de pedidos", estado="en_revision", horas_estimadas="48", responsable_id="")
+    assert cliente.post(f"/tareas/{pedidos['id']}/editar", data=datos).status_code == 302
+    editada = base_datos.obtener_tarea(pedidos["id"])
+    assert editada["estado"] == "en_revision" and editada["horas_estimadas"] == 48
+    assert editada["responsable_id"] is None and editada["horas_reales"] == 7  # las horas se conservan
+
+
+def test_eliminar_tarea_borra_sus_horas(cliente, admin):
+    api = tarea("API de autenticación")
+    cliente.post(f"/tareas/{api['id']}/eliminar")
+    assert base_datos.obtener_tarea(api["id"]) is None and base_datos.listar_registros(api["id"]) == []
+
+
+def test_responsable_mueve_su_tarea_en_el_tablero(cliente, entrar):
+    entrar("dev@demo.com")
+    pedidos = tarea("Módulo de pedidos")
+    respuesta = cliente.post(f"/tareas/{pedidos['id']}/estado",
+                             data={"estado": "en_revision", "next": "/tareas?vista=kanban"})
+    assert respuesta.headers["Location"] == "/tareas?vista=kanban"
+    assert base_datos.obtener_tarea(pedidos["id"])["estado"] == "en_revision"
+    # No puede mover la tarea de otra persona aunque sea del mismo proyecto
+    facturas = tarea("Pantalla de facturas")
+    assert cliente.post(f"/tareas/{facturas['id']}/estado", data={"estado": "concluida"}).status_code == 403
+    assert base_datos.obtener_tarea(facturas["id"])["estado"] == "en_progreso"
+
+
+def test_cambio_de_estado_ignora_next_externo_y_estados_invalidos(cliente, admin):
+    pedidos = tarea("Módulo de pedidos")
+    for externo in ("https://malo.com", "//malo.com", "/\\malo.com"):
+        respuesta = cliente.post(f"/tareas/{pedidos['id']}/estado", data={"estado": "concluida", "next": externo})
+        assert respuesta.headers["Location"] == f"/tareas/{pedidos['id']}"
+    cliente.post(f"/tareas/{pedidos['id']}/estado", data={"estado": "inventado"})
+    assert base_datos.obtener_tarea(pedidos["id"])["estado"] == "concluida"
+
+
+def test_registrar_y_eliminar_horas(cliente, entrar):
+    entrar("dev@demo.com")
+    pedidos = tarea("Módulo de pedidos")
+    respuesta = cliente.post(f"/tareas/{pedidos['id']}/horas", data={"fecha": "2026-11-12", "horas": "3.5", "nota": "CRUD"})
+    assert respuesta.status_code == 302
+    assert base_datos.obtener_tarea(pedidos["id"])["horas_reales"] == 10.5
+    registro = base_datos.listar_registros(pedidos["id"])[0]
+    assert registro["usuario_id"] == usuario("dev@demo.com")["id"] and registro["nota"] == "CRUD"
+    cliente.post(f"/tareas/{pedidos['id']}/horas/{registro['id']}/eliminar")
+    assert base_datos.obtener_tarea(pedidos["id"])["horas_reales"] == 7
+
+
+def test_registro_de_horas_valida_datos(cliente, entrar):
+    entrar("dev@demo.com")
+    pedidos = tarea("Módulo de pedidos")
+    for datos, mensaje in [({"fecha": "2099-01-01", "horas": "2"}, "fechas futuras"),
+                           ({"fecha": "2026-11-12", "horas": "0"}, "mayor que 0"),
+                           ({"fecha": "2026-11-12", "horas": "25"}, "mayor que 0"),
+                           ({"fecha": "ayer", "horas": "2"}, "fecha válida")]:
+        assert mensaje.encode() in cliente.post(f"/tareas/{pedidos['id']}/horas", data=datos).data, mensaje
+    assert base_datos.obtener_tarea(pedidos["id"])["horas_reales"] == 7
+
+
+def test_solo_el_responsable_registra_horas(cliente, entrar):
+    entrar("dev@demo.com")
+    facturas = tarea("Pantalla de facturas")  # de Lucía
+    assert cliente.post(f"/tareas/{facturas['id']}/horas", data={"fecha": "2026-11-12", "horas": "1"}).status_code == 403
+    # Tampoco puede borrar horas registradas por otra persona
+    entrevistas = tarea("Entrevistas con el cliente")
+    registro = base_datos.listar_registros(entrevistas["id"])[0]
+    assert cliente.post(f"/tareas/{entrevistas['id']}/horas/{registro['id']}/eliminar").status_code == 403
+
+
+def test_fase_con_tareas_no_se_elimina(cliente, admin):
+    desarrollo = fase("Portal de clientes", "Desarrollo")
+    respuesta = cliente.post(f"/proyectos/{desarrollo['proyecto_id']}/fases/{desarrollo['id']}/eliminar",
+                             follow_redirects=True)
+    assert "muévelas a otra fase".encode() in respuesta.data
+    assert base_datos.obtener_fase(desarrollo["proyecto_id"], desarrollo["id"]) is not None
+
+
+def test_quitar_miembro_deja_sus_tareas_sin_responsable(cliente, admin):
+    portal, lucia = proyecto("Portal de clientes"), usuario("dev2@demo.com")
+    cliente.post(f"/proyectos/{portal['id']}/miembros/{lucia['id']}/quitar")
+    facturas = tarea("Pantalla de facturas")
+    assert facturas["responsable_id"] is None and facturas["horas_reales"] == 6
+
+
+def test_eliminar_proyecto_borra_sus_tareas(cliente, admin):
+    portal = proyecto("Portal de clientes")
+    cliente.post(f"/proyectos/{portal['id']}/eliminar")
+    assert base_datos.listar_tareas(proyecto=portal["id"]) == []
+    assert tarea("API de autenticación") is None
+
+
+def test_detalle_de_proyecto_resume_horas_por_fase(cliente, admin):
+    portal = proyecto("Portal de clientes")
+    respuesta = cliente.get(f"/proyectos/{portal['id']}").data.decode()
+    assert "118 h</span> / 208 h" in respuesta  # horas reales / estimadas del proyecto completo
+    assert "Ver tablero de tareas" in respuesta
+
+
+def test_detalle_de_tarea_muestra_desviacion(cliente, admin):
+    diseno = tarea("Prototipo de pantallas")  # 28 h reales de 30 estimadas
+    respuesta = cliente.get(f"/tareas/{diseno['id']}").data.decode()
+    assert "-2 h" in respuesta and "93 %" in respuesta
