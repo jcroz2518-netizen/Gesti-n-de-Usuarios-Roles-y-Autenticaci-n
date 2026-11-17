@@ -1,7 +1,7 @@
 import os
 import secrets
 import smtplib
-from datetime import timedelta
+from datetime import date, timedelta
 from email.message import EmailMessage
 from functools import wraps
 from urllib.parse import urlsplit
@@ -63,13 +63,28 @@ def datos_plantillas():
     return {
         "usuario_actual": g.get("usuario"), "ADMIN": ADMIN, "DESARROLLADOR": DESARROLLADOR, "CLIENTE": CLIENTE,
         "ESTADOS_PROYECTO": base_datos.ESTADOS_PROYECTO, "ESTADOS_FASE": base_datos.ESTADOS_FASE,
-        "ROLES_PROYECTO": base_datos.ROLES_PROYECTO,
+        "ROLES_PROYECTO": base_datos.ROLES_PROYECTO, "PRIORIDADES": base_datos.PRIORIDADES,
+        "ESTADOS_TAREA": base_datos.ESTADOS_TAREA,
     }
 
 
 @app.template_filter("moneda")
 def moneda(valor):
     return f"$ {valor:,.2f}"
+
+
+@app.template_filter("horas")
+def horas(valor):
+    """12.0 -> "12 h", 7.5 -> "7.5 h" """
+    return f"{valor:,.2f}".rstrip("0").rstrip(".") + " h"
+
+
+def ruta_segura(siguiente, defecto):
+    """Solo rutas internas, para evitar redirecciones a otros sitios."""
+    if (not siguiente or not siguiente.startswith("/") or siguiente.startswith(("//", "/\\"))
+            or urlsplit(siguiente).netloc):
+        return defecto
+    return siguiente
 
 
 def login_requerido(vista):
@@ -188,11 +203,7 @@ def login():
             session["usuario_id"] = usuario["id"]
             session.permanent = "recordar" in request.form
             base_datos.registrar_acceso(usuario["id"])
-            siguiente = request.args.get("next", "")
-            # Solo rutas internas, para evitar redirecciones a otros sitios.
-            if not siguiente.startswith("/") or urlsplit(siguiente).netloc:
-                siguiente = url_for("panel")
-            return redirect(siguiente)
+            return redirect(ruta_segura(request.args.get("next"), url_for("panel")))
     return render_template("login.html", correo=correo)
 
 
@@ -237,20 +248,13 @@ def restablecer(token):
 
 # ---------------------------------------------------------------------------
 # Panel y secciones por rol
-# Tareas e informes son de momento páginas de demostración del control de
-# acceso; sus módulos se construirán encima.
+# Informes es de momento una página de demostración del control de acceso;
+# su módulo se construirá encima.
 # ---------------------------------------------------------------------------
 @app.route("/panel")
 @login_requerido
 def panel():
     return render_template("panel.html")
-
-
-@app.route("/tareas")
-@rol_requerido(ADMIN, DESARROLLADOR)
-def tareas():
-    return render_template("seccion.html", titulo="Tareas",
-                           texto="Gestión de tareas y registro de horas y avances.")
 
 
 @app.route("/informes")
@@ -441,7 +445,7 @@ def miembro_quitar(proyecto_id, usuario_id):
     if not base_datos.es_miembro(proyecto_id, usuario_id):
         abort(404)
     base_datos.quitar_miembro(proyecto_id, usuario_id)
-    flash("Miembro retirado del equipo.", "success")
+    flash("Miembro retirado del equipo. Sus tareas en este proyecto quedan sin responsable.", "success")
     return redirect(url_for("proyecto_detalle", proyecto_id=proyecto_id) + "#equipo")
 
 
@@ -481,9 +485,168 @@ def fase_editar(proyecto_id, fase_id):
 @rol_requerido(ADMIN)
 def fase_eliminar(proyecto_id, fase_id):
     fase_o_404(proyecto_id, fase_id)
-    base_datos.eliminar_fase(fase_id)
-    flash("Fase eliminada.", "success")
+    num_tareas = base_datos.contar_tareas_fase(fase_id)
+    if num_tareas:
+        flash(f"La fase tiene {num_tareas} tarea(s); muévelas a otra fase o elimínalas antes.", "danger")
+    else:
+        base_datos.eliminar_fase(fase_id)
+        flash("Fase eliminada.", "success")
     return redirect(url_for("proyecto_detalle", proyecto_id=proyecto_id) + "#fases")
+
+
+# ---------------------------------------------------------------------------
+# Tareas y registro de horas
+# Administrador: todo. Desarrollador: ve las tareas de los proyectos de los que
+# es miembro y, en las que es responsable, cambia el estado y registra horas.
+# ---------------------------------------------------------------------------
+def es_admin():
+    return g.usuario["rol"] == ADMIN
+
+
+def puede_trabajar(tarea):
+    return es_admin() or tarea["responsable_id"] == g.usuario["id"]
+
+
+app.jinja_env.globals["puede_trabajar"] = puede_trabajar
+
+
+def tarea_o_404(tarea_id):
+    tarea = base_datos.obtener_tarea(tarea_id)
+    if tarea is None:
+        abort(404)
+    if not es_admin() and not base_datos.es_miembro(tarea["proyecto_id"], g.usuario["id"]):
+        abort(403)
+    return tarea
+
+
+def formulario_tarea(titulo, proyecto, datos, errores, tarea=None):
+    return render_template("tarea_form.html", titulo=titulo, proyecto=proyecto, datos=datos, errores=errores,
+                           tarea=tarea, fases=base_datos.listar_fases(proyecto["id"]),
+                           miembros=base_datos.listar_miembros(proyecto["id"]))
+
+
+def detalle_tarea(tarea, datos=None, errores=None):
+    hoy = date.today().isoformat()
+    return render_template("tarea.html", tarea=tarea, registros=base_datos.listar_registros(tarea["id"]),
+                           datos=datos or {"fecha": hoy}, errores=errores or {}, hoy=hoy)
+
+
+@app.route("/tareas")
+@rol_requerido(ADMIN, DESARROLLADOR)
+def tareas():
+    filtros = {campo: request.args.get(campo, "").strip()
+               for campo in ("q", "proyecto", "responsable", "estado", "prioridad")}
+    miembro_id = None if es_admin() else g.usuario["id"]
+    lista = base_datos.listar_tareas(filtros["q"], filtros["proyecto"], filtros["responsable"],
+                                     filtros["estado"], filtros["prioridad"], miembro_id)
+    proyectos_visibles = base_datos.proyectos_de_usuario(miembro_id)
+    return render_template(
+        "tareas.html",
+        tareas=lista,
+        columnas={estado: [t for t in lista if t["estado"] == estado] for estado in base_datos.ESTADOS_TAREA},
+        vista="kanban" if request.args.get("vista") == "kanban" else "lista",
+        filtros=filtros,
+        proyectos=proyectos_visibles,
+        responsables=base_datos.miembros_de_proyectos([p["id"] for p in proyectos_visibles]),
+    )
+
+
+@app.route("/tareas/nueva", methods=["GET", "POST"])
+@rol_requerido(ADMIN)
+def tarea_nueva():
+    proyecto_id = request.args.get("proyecto", "")
+    proyecto = base_datos.obtener_proyecto(int(proyecto_id)) if proyecto_id.isdigit() else None
+    if proyecto is None:
+        # Primer paso: elegir el proyecto, porque las fases y los responsables dependen de él.
+        return render_template("tarea_proyecto.html", proyectos=base_datos.proyectos_de_usuario())
+
+    datos = {"prioridad": "media", "estado": "por_hacer", "horas_estimadas": "0",
+             "fase_id": request.args.get("fase", "")}
+    errores = {}
+    if request.method == "POST":
+        datos = request.form
+        errores = validaciones.validar_tarea(datos, proyecto["id"])
+        if not errores:
+            tarea_id = base_datos.crear_tarea(datos)
+            flash("Tarea creada.", "success")
+            return redirect(url_for("tarea_detalle", tarea_id=tarea_id))
+    return formulario_tarea("Nueva tarea", proyecto, datos, errores)
+
+
+@app.route("/tareas/<int:tarea_id>")
+@rol_requerido(ADMIN, DESARROLLADOR)
+def tarea_detalle(tarea_id):
+    return detalle_tarea(tarea_o_404(tarea_id))
+
+
+@app.route("/tareas/<int:tarea_id>/editar", methods=["GET", "POST"])
+@rol_requerido(ADMIN)
+def tarea_editar(tarea_id):
+    tarea = tarea_o_404(tarea_id)
+    proyecto = base_datos.obtener_proyecto(tarea["proyecto_id"])
+    datos, errores = dict(tarea), {}
+    if request.method == "POST":
+        datos = request.form
+        errores = validaciones.validar_tarea(datos, proyecto["id"], tarea)
+        if not errores:
+            base_datos.actualizar_tarea(tarea_id, datos)
+            flash("Tarea actualizada.", "success")
+            return redirect(url_for("tarea_detalle", tarea_id=tarea_id))
+    return formulario_tarea("Editar tarea", proyecto, datos, errores, tarea)
+
+
+@app.route("/tareas/<int:tarea_id>/eliminar", methods=["POST"])
+@rol_requerido(ADMIN)
+def tarea_eliminar(tarea_id):
+    tarea = tarea_o_404(tarea_id)
+    base_datos.eliminar_tarea(tarea_id)
+    flash(f"Tarea «{tarea['titulo']}» eliminada.", "success")
+    return redirect(url_for("tareas"))
+
+
+@app.route("/tareas/<int:tarea_id>/estado", methods=["POST"])
+@rol_requerido(ADMIN, DESARROLLADOR)
+def tarea_estado(tarea_id):
+    """Mueve la tarea de columna en el tablero (o desde su detalle)."""
+    tarea = tarea_o_404(tarea_id)
+    if not puede_trabajar(tarea):
+        abort(403)
+    estado = request.form.get("estado")
+    if estado not in base_datos.ESTADOS_TAREA:
+        flash("Estado no válido.", "danger")
+    elif estado != tarea["estado"]:
+        base_datos.cambiar_estado_tarea(tarea_id, estado)
+        flash(f"«{tarea['titulo']}» pasó a {base_datos.ESTADOS_TAREA[estado]}.", "success")
+    return redirect(ruta_segura(request.form.get("next"), url_for("tarea_detalle", tarea_id=tarea_id)))
+
+
+@app.route("/tareas/<int:tarea_id>/horas", methods=["POST"])
+@rol_requerido(ADMIN, DESARROLLADOR)
+def tarea_horas(tarea_id):
+    tarea = tarea_o_404(tarea_id)
+    if not puede_trabajar(tarea):
+        abort(403)
+    errores = validaciones.validar_registro_horas(request.form)
+    if errores:
+        return detalle_tarea(tarea, request.form, errores)
+    base_datos.registrar_horas(tarea_id, g.usuario["id"], request.form["fecha"], request.form["horas"],
+                               request.form.get("nota", ""))
+    flash("Horas registradas.", "success")
+    return redirect(url_for("tarea_detalle", tarea_id=tarea_id) + "#horas")
+
+
+@app.route("/tareas/<int:tarea_id>/horas/<int:registro_id>/eliminar", methods=["POST"])
+@rol_requerido(ADMIN, DESARROLLADOR)
+def registro_eliminar(tarea_id, registro_id):
+    tarea_o_404(tarea_id)
+    registro = base_datos.obtener_registro(tarea_id, registro_id)
+    if registro is None:
+        abort(404)
+    if not es_admin() and registro["usuario_id"] != g.usuario["id"]:
+        abort(403)
+    base_datos.eliminar_registro(registro_id)
+    flash("Registro de horas eliminado.", "success")
+    return redirect(url_for("tarea_detalle", tarea_id=tarea_id) + "#horas")
 
 
 # ---------------------------------------------------------------------------

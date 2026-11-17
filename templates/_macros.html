@@ -57,3 +57,18 @@
     </div>
   </div>
 {% endmacro %}
+
+{% macro estado_tarea(estado) -%}
+  {%- set colores = {"por_hacer": "secondary", "en_progreso": "primary", "en_revision": "warning", "concluida": "success"} -%}
+  <span class="badge text-bg-{{ colores.get(estado, 'light') }}">{{ ESTADOS_TAREA.get(estado, estado) }}</span>
+{%- endmacro %}
+
+{% macro prioridad(valor) -%}
+  {%- set colores = {"baja": "light border", "media": "info", "alta": "warning", "critica": "danger"} -%}
+  <span class="badge text-bg-{{ colores.get(valor, 'light') }}">{{ PRIORIDADES.get(valor, valor) }}</span>
+{%- endmacro %}
+
+{# Horas reales frente a estimadas; en rojo si ya se pasó de la estimación #}
+{% macro consumo(reales, estimadas) -%}
+  <span class="{{ 'text-danger fw-semibold' if reales > estimadas else '' }}">{{ reales|horas }}</span> / {{ estimadas|horas }}
+{%- endmacro %}

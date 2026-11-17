@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf, estado_tarea, prioridad, consumo with context %}
+{% block titulo %}Tareas{% endblock %}
+{% block contenido %}
+{% set claves = ESTADOS_TAREA|list %}
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+  <h1 class="h3 mb-0">Tareas</h1>
+  <div class="d-flex gap-2">
+    <div class="btn-group" role="group" aria-label="Vista">
+      <a href="{{ url_for('tareas', **dict(filtros, vista='lista')) }}" class="btn btn-outline-secondary{% if vista == 'lista' %} active{% endif %}">Lista</a>
+      <a href="{{ url_for('tareas', **dict(filtros, vista='kanban')) }}" class="btn btn-outline-secondary{% if vista == 'kanban' %} active{% endif %}">Kanban</a>
+    </div>
+    {% if usuario_actual.rol == ADMIN %}
+    <a href="{{ url_for('tarea_nueva', proyecto=filtros.proyecto) }}" class="btn btn-primary">Nueva tarea</a>
+    {% endif %}
+  </div>
+</div>
+
+<form class="row g-2 mb-2" method="get">
+  <input type="hidden" name="vista" value="{{ vista }}">
+  <div class="col-lg-3"><input name="q" class="form-control" placeholder="Buscar por título o descripción" value="{{ filtros.q }}"></div>
+  <div class="col-lg-2 col-md-6">
+    <select name="proyecto" class="form-select" aria-label="Proyecto">
+      <option value="">Todos los proyectos</option>
+      {% for p in proyectos %}
+      <option value="{{ p.id }}" {% if filtros.proyecto == p.id|string %}selected{% endif %}>{{ p.nombre }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-lg-2 col-md-6">
+    <select name="responsable" class="form-select" aria-label="Responsable">
+      <option value="">Todos los responsables</option>
+      <option value="ninguno" {% if filtros.responsable == 'ninguno' %}selected{% endif %}>Sin asignar</option>
+      {% for u in responsables %}
+      <option value="{{ u.id }}" {% if filtros.responsable == u.id|string %}selected{% endif %}>{{ u.nombre }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-lg-2 col-md-4">
+    <select name="estado" class="form-select" aria-label="Estado">
+      <option value="">Todos los estados</option>
+      {% for clave, texto in ESTADOS_TAREA.items() %}
+      <option value="{{ clave }}" {% if filtros.estado == clave %}selected{% endif %}>{{ texto }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-lg-1 col-md-4">
+    <select name="prioridad" class="form-select" aria-label="Prioridad">
+      <option value="">Prioridad</option>
+      {% for clave, texto in PRIORIDADES.items() %}
+      <option value="{{ clave }}" {% if filtros.prioridad == clave %}selected{% endif %}>{{ texto }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-lg-2 col-md-4 d-flex gap-2">
+    <button class="btn btn-outline-secondary flex-fill">Filtrar</button>
+    <a href="{{ url_for('tareas', vista=vista) }}" class="btn btn-link px-1">Limpiar</a>
+  </div>
+</form>
+<p class="small text-muted mb-3">
+  <a href="{{ url_for('tareas', **dict(filtros, responsable=usuario_actual.id, vista=vista)) }}">Solo mis tareas</a>
+  · {{ tareas|length }} tarea(s) · Horas reales / estimadas:
+  {{ consumo(tareas|sum(attribute="horas_reales"), tareas|sum(attribute="horas_estimadas")) }}
+</p>
+
+{% if vista == 'kanban' %}
+{# --- Tablero Kanban: arrastra las tarjetas o usa las flechas --- #}
+<div class="row g-3 kanban">
+  {% for clave, texto in ESTADOS_TAREA.items() %}
+  {% set i = loop.index0 %}
+  <div class="col-lg-3 col-md-6">
+    <div class="kanban-columna h-100" data-estado="{{ clave }}">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h2 class="h6 mb-0">{{ texto }}</h2>
+        <span class="badge text-bg-light border">{{ columnas[clave]|length }}</span>
+      </div>
+      {% for t in columnas[clave] %}
+      {% set movible = puede_trabajar(t) %}
+      <div class="card kanban-tarjeta mb-2 shadow-sm" {% if movible %}draggable="true" data-url="{{ url_for('tarea_estado', tarea_id=t.id) }}" data-estado="{{ t.estado }}"{% endif %}>
+        <div class="card-body p-2">
+          <div class="d-flex justify-content-between gap-2">
+            <a href="{{ url_for('tarea_detalle', tarea_id=t.id) }}" class="fw-semibold small">{{ t.titulo }}</a>
+            {{ prioridad(t.prioridad) }}
+          </div>
+          <div class="small text-muted">{{ t.proyecto }} · {{ t.fase }}</div>
+          <div class="d-flex justify-content-between align-items-center mt-1 small">
+            <span>{{ t.responsable or 'Sin asignar' }}</span>
+            <span>{{ consumo(t.horas_reales, t.horas_estimadas) }}</span>
+          </div>
+          {% if movible %}
+          <div class="d-flex justify-content-between mt-1">
+            {% for destino, simbolo, titulo in [(claves[i - 1] if i > 0 else none, '←', 'Mover atrás'), (claves[i + 1] if i < claves|length - 1 else none, '→', 'Mover adelante')] %}
+            {% if destino %}
+            <form method="post" action="{{ url_for('tarea_estado', tarea_id=t.id) }}">
+              {{ csrf() }}
+              <input type="hidden" name="estado" value="{{ destino }}">
+              <input type="hidden" name="next" value="{{ request.full_path }}">
+              <button class="btn btn-sm btn-link p-0 text-decoration-none" title="{{ titulo }}: {{ ESTADOS_TAREA[destino] }}">{{ simbolo }} {{ ESTADOS_TAREA[destino] }}</button>
+            </form>
+            {% else %}<span></span>{% endif %}
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+      </div>
+      {% else %}
+      <p class="small text-muted text-center my-3">Sin tareas</p>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{# Formulario que usa el arrastrar y soltar para enviar el cambio de estado #}
+<form method="post" id="form-mover" class="d-none">
+  {{ csrf() }}
+  <input type="hidden" name="estado">
+  <input type="hidden" name="next" value="{{ request.full_path }}">
+</form>
+<script>
+  (function () {
+    var arrastrada = null;
+    var formulario = document.getElementById("form-mover");
+    document.querySelectorAll(".kanban-tarjeta[draggable]").forEach(function (tarjeta) {
+      tarjeta.addEventListener("dragstart", function (e) {
+        arrastrada = tarjeta;
+        e.dataTransfer.effectAllowed = "move";
+        tarjeta.classList.add("arrastrando");
+      });
+      tarjeta.addEventListener("dragend", function () { tarjeta.classList.remove("arrastrando"); });
+    });
+    document.querySelectorAll(".kanban-columna").forEach(function (columna) {
+      columna.addEventListener("dragover", function (e) {
+        if (arrastrada) { e.preventDefault(); columna.classList.add("destino"); }
+      });
+      columna.addEventListener("dragleave", function () { columna.classList.remove("destino"); });
+      columna.addEventListener("drop", function (e) {
+        e.preventDefault();
+        columna.classList.remove("destino");
+        if (!arrastrada || arrastrada.dataset.estado === columna.dataset.estado) return;
+        formulario.action = arrastrada.dataset.url;
+        formulario.elements.estado.value = columna.dataset.estado;
+        formulario.submit();
+      });
+    });
+  })();
+</script>
+
+{% else %}
+{# --- Lista --- #}
+<div class="table-responsive">
+<table class="table table-striped align-middle bg-white">
+  <thead><tr><th>Tarea</th><th>Prioridad</th><th>Responsable</th><th>Estado</th><th>Horas reales / est.</th><th class="text-end">Acciones</th></tr></thead>
+  <tbody>
+  {% for t in tareas %}
+    <tr>
+      <td>
+        <a href="{{ url_for('tarea_detalle', tarea_id=t.id) }}" class="fw-semibold">{{ t.titulo }}</a>
+        <div class="small text-muted">{{ t.proyecto }} · {{ t.fase }}</div>
+      </td>
+      <td>{{ prioridad(t.prioridad) }}</td>
+      <td>{{ t.responsable or '—' }}</td>
+      <td>
+        {% if puede_trabajar(t) %}
+        <form method="post" action="{{ url_for('tarea_estado', tarea_id=t.id) }}">
+          {{ csrf() }}
+          <input type="hidden" name="next" value="{{ request.full_path }}">
+          <select name="estado" class="form-select form-select-sm" aria-label="Estado" onchange="this.form.submit()">
+            {% for clave, texto in ESTADOS_TAREA.items() %}
+            <option value="{{ clave }}" {% if t.estado == clave %}selected{% endif %}>{{ texto }}</option>
+            {% endfor %}
+          </select>
+        </form>
+        {% else %}{{ estado_tarea(t.estado) }}{% endif %}
+      </td>
+      <td class="text-nowrap">{{ consumo(t.horas_reales, t.horas_estimadas) }}</td>
+      <td class="text-end text-nowrap">
+        <a href="{{ url_for('tarea_detalle', tarea_id=t.id) }}" class="btn btn-sm btn-outline-secondary">Ver</a>
+        {% if usuario_actual.rol == ADMIN %}
+        <a href="{{ url_for('tarea_editar', tarea_id=t.id) }}" class="btn btn-sm btn-outline-primary">Editar</a>
+        {% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="text-center text-muted">No hay tareas que coincidan.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

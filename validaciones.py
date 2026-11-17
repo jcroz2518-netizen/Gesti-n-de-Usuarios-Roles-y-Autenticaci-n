@@ -79,6 +79,17 @@ def leer_fecha(valor):
         return None
 
 
+def leer_numero(valor, maximo=None):
+    """Número finito >= 0 (y <= maximo si se indica), o None si no es válido."""
+    try:
+        numero = float((valor or "").strip())
+    except ValueError:
+        return None
+    if not math.isfinite(numero) or numero < 0 or (maximo is not None and numero > maximo):
+        return None
+    return numero
+
+
 def validar_texto_largo(texto, maximo=2000):
     if len(texto.strip()) > maximo:
         return f"Máximo {maximo} caracteres."
@@ -106,11 +117,7 @@ def validar_proyecto(datos, proyecto_id=None):
         "objetivos": validar_texto_largo(datos.get("objetivos", "")),
     }
     inicio, fin = validar_fechas(datos, errores)
-    try:
-        presupuesto = float(datos.get("presupuesto", "").strip())
-        if not math.isfinite(presupuesto) or presupuesto < 0:
-            raise ValueError
-    except ValueError:
+    if leer_numero(datos.get("presupuesto")) is None:
         errores["presupuesto"] = "El presupuesto debe ser un número mayor o igual a 0."
     if datos.get("estado") not in base_datos.ESTADOS_PROYECTO:
         errores["estado"] = "Selecciona un estado válido."
@@ -154,3 +161,53 @@ def validar_miembro(datos, proyecto_id):
     if datos.get("rol_proyecto") not in base_datos.ROLES_PROYECTO:
         return "Selecciona un rol válido para el proyecto."
     return None
+
+
+# --- Tareas y registro de horas ----------------------------------------------
+MAX_HORAS_ESTIMADAS = 10000
+MAX_HORAS_DIA = 24
+
+
+def validar_tarea(datos, proyecto_id, tarea=None):
+    """tarea es la tarea actual al editar (None al crear)."""
+    errores = {"descripcion": validar_texto_largo(datos.get("descripcion", ""))}
+    titulo = datos.get("titulo", "").strip()
+    if not titulo:
+        errores["titulo"] = "El título es obligatorio."
+    elif len(titulo) < 3 or len(titulo) > 150:
+        errores["titulo"] = "El título debe tener entre 3 y 150 caracteres."
+
+    fase_id = datos.get("fase_id", "")
+    if not fase_id.isdigit() or base_datos.obtener_fase(proyecto_id, int(fase_id)) is None:
+        errores["fase_id"] = "Selecciona una fase del proyecto."
+    if datos.get("prioridad") not in base_datos.PRIORIDADES:
+        errores["prioridad"] = "Selecciona una prioridad válida."
+    if datos.get("estado") not in base_datos.ESTADOS_TAREA:
+        errores["estado"] = "Selecciona un estado válido."
+    if leer_numero(datos.get("horas_estimadas"), MAX_HORAS_ESTIMADAS) is None:
+        errores["horas_estimadas"] = f"Las horas estimadas deben ser un número entre 0 y {MAX_HORAS_ESTIMADAS}."
+
+    # El responsable es opcional, pero debe ser un miembro activo del equipo del proyecto
+    # (se permite conservar al responsable actual aunque se haya desactivado).
+    responsable_id = datos.get("responsable_id", "")
+    if responsable_id:
+        usuario = base_datos.obtener_usuario(int(responsable_id)) if responsable_id.isdigit() else None
+        sigue_igual = tarea is not None and str(tarea["responsable_id"]) == responsable_id
+        if usuario is None or not base_datos.es_miembro(proyecto_id, usuario["id"]):
+            errores["responsable_id"] = "El responsable debe ser miembro del equipo del proyecto."
+        elif not usuario["activo"] and not sigue_igual:
+            errores["responsable_id"] = "No se pueden asignar tareas a usuarios inactivos."
+    return {campo: error for campo, error in errores.items() if error}
+
+
+def validar_registro_horas(datos):
+    errores = {"nota": validar_texto_largo(datos.get("nota", ""), 500)}
+    fecha = leer_fecha(datos.get("fecha"))
+    if fecha is None:
+        errores["fecha"] = "Indica una fecha válida."
+    elif fecha > date.today():
+        errores["fecha"] = "No se pueden registrar horas en fechas futuras."
+    horas = leer_numero(datos.get("horas"), MAX_HORAS_DIA)
+    if horas is None or horas == 0:
+        errores["horas"] = f"Las horas deben ser un número mayor que 0 y como máximo {MAX_HORAS_DIA}."
+    return {campo: error for campo, error in errores.items() if error}
